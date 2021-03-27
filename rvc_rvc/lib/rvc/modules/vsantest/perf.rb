@@ -26,9 +26,10 @@ class VIM::VirtualMachine
     return num
   end
 
-  def ipAddress
+  def getipAddress
     ips = []
     ip_to_show = nil
+    link_local_v6_ips = []
     nics = self.guest.net
     nics.each do |nic|
       nic.ipAddress.each do |nic_ip|
@@ -47,16 +48,20 @@ class VIM::VirtualMachine
         if ipv6[0..3] != "fe80"
           ip_to_show = ipv6
           break
+	else
+	  link_local_v6_ips << ipv6
         end
       end
     end
 
+    ip_to_show = link_local_v6_ips[0] + "%eth1" if not ip_to_show
+    
     @ipAddress ||= ip_to_show #self.guest.ipAddress
   end
 
   def ssh;
     Net::SSH.start(
-    self.ipAddress, 'root',
+    self.getipAddress, 'root',
     :password => 'vdbench',
     :verify_host_key => :never,
     :keepalive => true,
@@ -118,6 +123,7 @@ class VIM::VirtualMachine
     end
     if opts[:tool] == "vdbench"
         cmds = [
+#| sed 's/\\(^fe80:.*\\)\\($\\)/\\1%eth0\\2/'`; \
 	  "gip=`netstat -nptW | grep 'sshd' | awk '{print $5}' | rev | cut -d ':' -f2- | rev`; \
 	  cd /root/vdbench; export CARBON_HOST=${gip}; \
           export METRIC_PREFIX='vdbench.#{output_folder_name}.#{testcase_name}.#{vmname}'; \
@@ -142,15 +148,7 @@ class VIM::VirtualMachine
     self.getresults(path,opts[:tool]);
   end
 
-  def runMemRead4k opts = {};
-    self._runio("", "-a r -f 256K -F 1 -i 4096 -o #{opts[:oio] || 32} -r 1.0")
-  end
-
-  def runSsdRead4k opts = {};
-    self._runio("", "-a r -f 100M -F 1 -i 4096 -o #{opts[:oio] || 32} -r 1.0");
-  end
-
-  def runio path, opts = {};
+  def runio path, opts = {}
     params = []
     self._runio(
     path,
@@ -160,10 +158,6 @@ class VIM::VirtualMachine
     :paramFile => opts[:paramFile],
     :tool => opts[:tool]
     )
-  end
-
-  def run70r30wRandom4kSmallArea opts = {};
-    self._runio("", "-a r -f 100M -i 4096 -o #{opts[:oio] || 32}  -r 0.7");
   end
 end
 
@@ -799,13 +793,13 @@ def runIoTest(vms, path, name, opts)
   if opts[:oio]; name += "-oio#{opts[:oio]}"; end
   if opts[:nameSuffix]; name += "-#{opts[:nameSuffix]}"; end
   opts[:vms] = vms
-
   runTestWithAnalyzer(path, name, vcip, hosts, opts) do
     threads = vms.map do |v|
       thread = Thread.new do
         begin
           yield(v)
         rescue Exception => ex
+puts ex.backtrace
           puts ex
           pp "#{v.name}: #{ex.class}: #{ex.message}"
         end
@@ -893,7 +887,6 @@ def runio_tests vms, opts
   if !opts[:dir]
     err "Must specify an output directory"
   end
-
   dir = opts[:dir]
 
   conn = vms.first._connection
@@ -1062,7 +1055,7 @@ def get_vm_network vms
   vms.each do |vm|
     if vm.summary.runtime.powerState == "poweredOn"
       network = vm.network[0]
-      ip = vm.ipAddress
+      ip = vm.getipAddress
       vm_net_map[vm.name] = {network._ref => ip}
     end
   end
@@ -2066,7 +2059,7 @@ def deploy_tvm cluster, opts
   end
   sleep(30)
   vms.each do |vm|
-    vm_ip = vm.ipAddress
+    vm_ip = vm.getipAddress
     `sed -i '/#{vm_ip} /d' /root/.ssh/known_hosts`
     time_retry = 0 
     while not system("ping -c 5 #{vm_ip}")
@@ -2324,7 +2317,7 @@ def deploy_test_vms cluster, opts
   sleep(30)
   failure_list = []
   vms.each do |vm|
-    vm_ip = vm.ipAddress
+    vm_ip = vm.getipAddress
     time_retry = 1
     while not system("ping -c 5 #{vm_ip}")
       if time_retry == 3
@@ -2342,13 +2335,13 @@ def deploy_test_vms cluster, opts
   while not failure_list.empty?
     puts "Not able to ping VMs #{failure_list.map {|a| a.name}}, try another time..."
     if retry_ping == 15
-      puts "Can't Ping VMs #{failure_list.map {|a| a.name}} by their IPs #{failure_list.map {|a| a.ipAddress}}"
+      puts "Can't Ping VMs #{failure_list.map {|a| a.name}} by their IPs #{failure_list.map {|a| a.getipAddress}}"
       exit(254)
     end
     sleep(60)
     success_list = []
     failure_list.each do |vm|
-      vm_ip = vm.ipAddress
+      vm_ip = vm.getipAddress
       if system("ping -c 5 #{vm_ip}")
         success_list << vm
       end

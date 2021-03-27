@@ -8,9 +8,9 @@ require_relative "rvc-util.rb"
   @hosts_list = @hosts_list | _get_hosts_list(vsan_cluster)
 end
 
-@start_drop_cmd = 'rm -rf /tmp/dropcache.log; nohup python /tmp/dropCache.pyc -r -w --verbose > /dev/null 2>&1 &'
-@drop_progress_cmd = 'ps -c | grep "dropCache.pyc" | grep "verbose" | wc -l'
-@drop_cache_script = "/opt/automation/lib/dropCache.pyc"
+@start_drop_cmd = 'rm -rf /tmp/dropcache.log; nohup python /tmp/dropCache.py -r -w --verbose > /dev/null 2>&1 &'
+@drop_progress_cmd = 'ps -c | grep "dropCache.py" | grep "verbose" | wc -l'
+@drop_cache_script = "/opt/automation/lib/dropCache.py"
 @drop_cache_log = "#{$log_path}/drop-cache.log"
 @failure = false
 

@@ -9,5 +9,6 @@ require_relative "util.rb"
 
 `sed -i 's/$/"/g' #{$tmp_path}/tvm.yaml`
 `sed -i 's/^/  - "/g' #{$tmp_path}/tvm.yaml`
+`sed -i 's/\\("fe80:.*\\)\\("\\)$/\\1%eth1\\2/' #{$tmp_path}/tvm.yaml`
 `sed -i '1i vms:\n' #{$tmp_path}/tvm.yaml`
 `sed -i '1i ---\n' #{$tmp_path}/tvm.yaml`

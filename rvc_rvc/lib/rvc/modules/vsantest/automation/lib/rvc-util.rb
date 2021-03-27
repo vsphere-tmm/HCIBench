@@ -132,7 +132,7 @@ $tmp_path = "#{$basedir}/../tmp/"
 $log_path = "#{$basedir}/../logs/"
 $vdbench_source_path = "/opt/output/vdbench-source"
 $fio_source_path = "/opt/output/fio-source"
-
+$compute_only_cluster = "" 
 $total_datastore = $datastore_names.count
 if IPAddress.valid? $vc_ip and IPAddress.valid_ipv6? $vc_ip
   $vc_rvc = Shellwords.escape("#{$vc_username}:#{$vc_password}") + "@[#{$vc_ip}]" + " -a"
@@ -398,11 +398,8 @@ def _is_vsan(datastore_name)
   return (ds_type == "vsan")
 end
 
-def _is_vsan_enabled
-  return (_get_vsandatastore_in_cluster != {})
-end
-
 def _is_ps_enabled(cluster_name = $cluster_name)
+  return false if $compute_only_cluster == cluster_name
   vsan_stats_hash = _get_vsan_disk_stats(cluster_name)
   return vsan_stats_hash["PerfSvc"]
 end
@@ -548,7 +545,8 @@ end
 def _is_ds_local_to_cluster(datastore_name)
   datastore_container_id = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} info.containerId`.chomp.delete('-')
   cluster_json = JSON.parse(`govc object.collect -json -s #{_get_moid("cl",$cluster_name).join(":")} configurationEx`.chomp)  
-  if cluster_json[0]["Val"]["VsanHostConfig"][0] ["Enabled"] 
+  if cluster_json[0]["Val"]["VsanHostConfig"][0]["ClusterInfo"]# ["Enabled"] 
+    $compute_only_cluster = $cluster_name if not cluster_json[0]["Val"]["VsanHostConfig"][0]["Enabled"]
     cluster_id = cluster_json[0]["Val"]["VsanHostConfig"][0]["ClusterInfo"]["Uuid"].delete('-')
     return (cluster_id == datastore_container_id)
   else
@@ -859,7 +857,7 @@ def _get_vsan_cpu_usage(test_case_path)
         end
         total_pcpu = total_num_of_pcpu.inject{ |sum, el| sum + el }
       end
-      msg += "#{cluster_name}: #{(pcpu_usage/total_pcpu).round(2)}%; "
+      msg += "#{cluster_name}: #{(pcpu_usage/total_pcpu).round(2)}%; " if pcpu_usage != 0.0
     end
   end
   if msg.count(";") == 1

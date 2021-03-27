@@ -376,11 +376,14 @@ def validate_cluster_connection
     entry = YAML.load_file($tvmlistfile)
     tvms = entry["vms"]
     tvms.each do |tvm|
-      cmd = "gip=`netstat -nptW | grep 'sshd' | awk '{print $5}' | rev | cut -d ':' -f2- | rev`;"
+      cmd = "gip=`netstat -nptW | grep 'sshd' | awk '{print $5}' | rev | cut -d ':' -f2- | rev | sed 's/\\(^fe80:.*\\)\\($\\)/\\1%eth0\\2/'`;"
       #cmd = "gip=`netstat -ntp 2>/dev/null| grep ':22' | awk '{print $5}' | cut -d ':' -f1`;"
+      
       cmd += 'timeout -t 5 sh -c "nc -vz $gip 2003" >/dev/null 2>&1;'
       cmd += "echo $?"
+
       return_code = ssh_cmd(tvm, 'root', 'VMware1!', cmd)
+
       if return_code.to_i != 0
         warning_msg "Network traffic to HCIBench:2003 is blocked, you can still run the testing, but Grafana live monitoring will not work"
         break
