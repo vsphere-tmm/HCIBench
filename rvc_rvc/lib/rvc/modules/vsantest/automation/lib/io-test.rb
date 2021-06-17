@@ -19,6 +19,7 @@ require "cgi"
 @sleep_time = 1800
 @debug_mode = $vsan_debug
 @vmkstats_collected = false
+@vsan_clusters_for_debug = [$cluster_name]
 
 vsan_datastores = _get_vsandatastore_in_cluster
 vsan_datastore_names = vsan_datastores.keys & $datastore_names
@@ -28,6 +29,7 @@ if vsan_datastore_names != []
   $telegraf_target_clusters_map[$cluster_name] = CGI.escape($cluster_name) if not $telegraf_target_clusters_map.key?($cluster_name) and _is_ps_enabled($cluster_name)
   vsan_datastore_names.each do |vsan_datastore_name|
     cluster_name = _get_vsan_cluster_from_datastore(vsan_datastore_name)
+    @vsan_clusters_for_debug = @vsan_clusters_for_debug | [cluster_name]
     $observer_target_clusters_arr = $observer_target_clusters_arr | [cluster_name]
     $telegraf_target_clusters_map[cluster_name] = CGI.escape(cluster_name) if not $telegraf_target_clusters_map.key?(cluster_name) and _is_ps_enabled(cluster_name)
   end

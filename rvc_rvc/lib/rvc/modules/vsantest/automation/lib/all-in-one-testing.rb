@@ -6,7 +6,6 @@ require 'timeout'
 
 @folder_path_escape = _get_folder_path_escape[0]
 @vsan_clusters = []
-@master_nodes = []
 @test_status_log = "#{$log_path}/test-status.log"
 `cp -f #{$basedir}/../conf/perf-conf.yaml #{$basedir}/../logs/hcibench.cfg`
 `sed -i '/username/d' #{$basedir}/../logs/hcibench.cfg`
@@ -46,6 +45,7 @@ if @diskutil > 85
 end
 
 # if debug is on
+# if perfsvc is off, turn it on
 # 1. find master node
 # 2. set interval to 60s
 # 3. turn on verbose mode
@@ -53,21 +53,19 @@ if $vsan_debug
   @vsan_clusters = _get_all_vsan_clusters
   if not @vsan_clusters.empty?
    @vsan_clusters.each do |vsan_cluster|
-      if _is_ps_enabled(vsan_cluster)
-        puts "Set vSAN Performance Service to verbose mode in cluster #{vsan_cluster}", @test_status_log
-        _set_perfsvc_verbose_mode(true,vsan_cluster)
-        @master_nodes = @master_nodes | [_get_perfsvc_master_node(vsan_cluster)]
-      end
+      _start_perfsvc(vsan_cluster) if not _is_ps_enabled(vsan_cluster)
+      puts "Set vSAN Performance Service to verbose mode in cluster #{vsan_cluster}", @test_status_log
+      _set_perfsvc_verbose_mode(true,vsan_cluster)
+      $perfsvc_master_nodes = $perfsvc_master_nodes | [_get_perfsvc_master_node(vsan_cluster)]
     end
   else
     failure_handler "vSAN not enabled!"
   end
-
-  cmd = "esxcli vsan perf set --interval=60; echo $?"  
-  @master_nodes.each do |master_node|
+  cmd_change_interval = "esxcli vsan perf set --interval=60; echo $?"  
+  $perfsvc_master_nodes.each do |master_node|
     puts "Setting vSAN Performance Service interval to 60s on #{master_node}", @test_status_log
     if ssh_valid(master_node,$host_username,$host_password)
-      if ssh_cmd(master_node,$host_username,$host_password,cmd).chomp == "0"
+      if ssh_cmd(master_node,$host_username,$host_password,cmd_change_interval).chomp == "0"
         puts "vSAN Performance Service interval is set to 60s on Performance Service master node: #{master_node} ", @test_status_log
       else
         puts "Failed to set vSAN Performance Service interval on Performance Service master node: #{master_node}", @test_status_log
@@ -172,7 +170,7 @@ if $vsan_debug
   end
 
   cmd = "esxcli vsan perf set --interval=300; echo $?" 
-  @master_nodes.each do |master_node|
+  $perfsvc_master_nodes.each do |master_node|
     puts "Setting vSAN Performance Service interval to 60s on #{master_node}", @test_status_log
     if ssh_valid(master_node,$host_username,$host_password)
       if ssh_cmd(master_node,$host_username,$host_password,cmd).chomp == "0"

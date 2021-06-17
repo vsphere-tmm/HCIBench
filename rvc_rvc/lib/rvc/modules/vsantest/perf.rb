@@ -297,7 +297,7 @@ end
 
 def add_data_disk vms, opts
   profile_id = ""
-  profile_id = "-p #{opts[:profile_id]} " if opts[:profile_id] and opts[:profile_id] != ""
+  profile_id = "--profile-id #{opts[:profile_id]} " if opts[:profile_id] and opts[:profile_id] != ""
   num_pvscsi = [(opts[:num].to_f/4).ceil,3].min
   disk_num_pvs_more = 0
   disk_num_pvs_less = 0

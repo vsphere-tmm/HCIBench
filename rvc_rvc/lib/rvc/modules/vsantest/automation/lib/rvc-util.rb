@@ -177,6 +177,7 @@ $easy_run_vsan_cluster = ""
 $telegraf_target_clusters_map = {}
 #clusters will be running observer, should be called all the time to the local, along with remote vsan ds specified
 $observer_target_clusters_arr = [$cluster_name]
+$perfsvc_master_nodes = []
 
 class MyJSON
   def self.valid?(value)
@@ -452,6 +453,18 @@ def _set_perfsvc_verbose_mode(verbose_mode,cluster_name = $cluster_name)
   return ($?.exitstatus == 0)
 end
 
+def _clean_perfsvc_stats(cluster_name = $cluster_name)
+  cl_path, cl_path_escape = _get_cl_path(cluster_name)
+  `rvc #{$vc_rvc} --path #{cl_path_escape} -c 'vsan.perf.stats_object_delete .' -c 'exit' -q`
+  return ($?.exitstatus == 0)
+end
+
+def _start_perfsvc(cluster_name = $cluster_name)
+  cl_path, cl_path_escape = _get_cl_path(cluster_name)
+  `rvc #{$vc_rvc} --path #{cl_path_escape} -c 'vsan.perf.stats_object_create .' -c 'exit' -q`
+  return ($?.exitstatus == 0)
+end
+
 # get ip pool if using static, otherwise return []
 # only add the ips not being occupied
 def _get_ip_pools
@@ -543,12 +556,13 @@ def _pick_vsan_cluster_for_easy_run
 end
 
 def _is_ds_local_to_cluster(datastore_name)
+  datastore_alias_id =`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} info.aliasOf`.chomp.delete('-')
   datastore_container_id = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} info.containerId`.chomp.delete('-')
   cluster_json = JSON.parse(`govc object.collect -json -s #{_get_moid("cl",$cluster_name).join(":")} configurationEx`.chomp)  
   if cluster_json[0]["Val"]["VsanHostConfig"][0]["ClusterInfo"]# ["Enabled"] 
     $compute_only_cluster = $cluster_name if not cluster_json[0]["Val"]["VsanHostConfig"][0]["Enabled"]
     cluster_id = cluster_json[0]["Val"]["VsanHostConfig"][0]["ClusterInfo"]["Uuid"].delete('-')
-    return (cluster_id == datastore_container_id)
+    return (cluster_id == datastore_container_id or cluster_id == datastore_alias_id)
   else
     return true
   end
@@ -556,10 +570,12 @@ end
 
 # get the owner cluster of the datastore
 def _get_vsan_cluster_from_datastore(datastore_name)
+  datastore_alias_id =`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} info.aliasOf`.chomp.delete('-')
   datastore_container_id = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} info.containerId`.chomp.delete('-')
   ds_hosts_list = _get_hosts_list_by_ds_name(datastore_name)
   ds_hosts_list.each do |host|
-    if `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("hs",host).join(":")} config.vsanHostConfig.clusterInfo.uuid`.chomp.delete('-') == datastore_container_id
+    cluster_id = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("hs",host).join(":")} config.vsanHostConfig.clusterInfo.uuid`.chomp.delete('-')
+    if cluster_id == datastore_container_id or cluster_id == datastore_alias_id
       cluster_full_moid = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("hs",host).join(":")} parent`.chomp
       return `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{cluster_full_moid} name`.chomp
     end
