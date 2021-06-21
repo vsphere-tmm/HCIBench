@@ -211,9 +211,9 @@ echo -e "\e[33mReplacing tomcat file...\e[0m"
 echo 'Stopping Tomcat'
 service tomcat stop
 echo 'Removing old web app'
-rm -rf /var/opt/apache-tomcat-8.5.4/webapps/VMtest*
+rm -rf /var/opt/apache-tomcat-8.5.68/webapps/VMtest*
 echo 'Copying new web app'
-mv "$PACKAGES/vmtest/VMtest.war" /var/opt/apache-tomcat-8.5.4/webapps/VMtest.war
+mv "$PACKAGES/vmtest/VMtest.war" /var/opt/apache-tomcat-8.5.68/webapps/VMtest.war
 echo 'Starting Tomcat'
 # Tomcat service needs to be started then restarted...
 service tomcat start
