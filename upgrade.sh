@@ -158,6 +158,7 @@ echo ""
 # WORKER and TVM
 # ***********************************************
 cat $DIR/pkgs/vm-template/disk-0.vmdk.parta* > $DIR/pkgs/vm-template/disk-0.vmdk
+rm -rf $DIR/pkgs/vm-template/disk-0.vmdk.parta*
 echo 'Copying new worker VM template'
 mv -f $DIR/pkgs/vm-template /opt/output/
 echo ""
