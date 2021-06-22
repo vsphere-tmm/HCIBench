@@ -210,10 +210,11 @@ echo ""
 echo -e "\e[33mReplacing tomcat file...\e[0m"
 echo 'Stopping Tomcat'
 service tomcat stop
+tc_path=`file /var/opt/apache-tomcat-* | cut -d : -f1`
 echo 'Removing old web app'
-rm -rf /var/opt/apache-tomcat-*/webapps/VMtest*
+rm -rf $tc_path/webapps/VMtest*
 echo 'Copying new web app'
-mv "$PACKAGES/vmtest/VMtest.war" /var/opt/apache-tomcat-*/webapps/VMtest.war
+mv "$PACKAGES/vmtest/VMtest.war" $tc_path/webapps/VMtest.war
 echo 'Starting Tomcat'
 # Tomcat service needs to be started then restarted...
 service tomcat start
