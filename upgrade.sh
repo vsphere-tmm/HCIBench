@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="2.5.2"
+VERSION="2.6.0"
 echo $VERSION > /etc/hcibench_version
 currentversion=`grep Welcome /etc/issue | awk '{print $5}'`
 sed "s/$currentversion/$VERSION/g" -i /etc/issue*
@@ -211,9 +211,9 @@ echo -e "\e[33mReplacing tomcat file...\e[0m"
 echo 'Stopping Tomcat'
 service tomcat stop
 echo 'Removing old web app'
-rm -rf /var/opt/apache-tomcat-8.5.68/webapps/VMtest*
+rm -rf /var/opt/apache-tomcat-*/webapps/VMtest*
 echo 'Copying new web app'
-mv "$PACKAGES/vmtest/VMtest.war" /var/opt/apache-tomcat-8.5.68/webapps/VMtest.war
+mv "$PACKAGES/vmtest/VMtest.war" /var/opt/apache-tomcat-*/webapps/VMtest.war
 echo 'Starting Tomcat'
 # Tomcat service needs to be started then restarted...
 service tomcat start
