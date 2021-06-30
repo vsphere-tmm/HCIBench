@@ -28,7 +28,7 @@ cp /root/glue.rb /root/tmp/ -f
 tdnf clean all
 yum clean all
 rm -rf /var/log/journal/*
-rm -rf /var/opt/apache-tomcat-8.5.4/logs/*
+rm -rf /var/opt/apache-tomcat-8.5.68/logs/*
 echo -n > /etc/machine-id
 > /root/.rvc-history
 > /root/.ssh/known_hosts

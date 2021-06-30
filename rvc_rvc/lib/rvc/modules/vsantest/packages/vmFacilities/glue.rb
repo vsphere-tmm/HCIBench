@@ -36,11 +36,11 @@ psd = Shellwords.escape("root:#{password}")
 psd_escape = Shellwords.escape(password)
 
 system(%{echo #{psd} | chpasswd})
-tomcat = `/var/opt/apache-tomcat-8.5.4/bin/digest.sh -a md5 -h org.apache.catalina.realm.MessageDigestCredentialHandler #{psd_escape}`
+tomcat = `/var/opt/apache-tomcat-8.5.68/bin/digest.sh -a md5 -h org.apache.catalina.realm.MessageDigestCredentialHandler '#{psd_escape}'`
 tomcat_psd = tomcat.chomp.rpartition(":").last
-`echo '<?xml version="1.0" encoding="UTF-8"?>' > /var/opt/apache-tomcat-8.5.4/conf/tomcat-users.xml`
-`echo '<tomcat-users xmlns="http://tomcat.apache.org/xml" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://tomcat.apache.org/xml tomcat-users.xsd" version="1.0">' >> /var/opt/apache-tomcat-8.5.4/conf/tomcat-users.xml`
-`echo '<role rolename="root"/>' >> /var/opt/apache-tomcat-8.5.4/conf/tomcat-users.xml`
-`echo '<user username="root" password="#{tomcat_psd}" roles="root"/>' >> /var/opt/apache-tomcat-8.5.4/conf/tomcat-users.xml`
-`echo '</tomcat-users>' >> /var/opt/apache-tomcat-8.5.4/conf/tomcat-users.xml`
+`echo '<?xml version="1.0" encoding="UTF-8"?>' > /var/opt/apache-tomcat-8.5.68/conf/tomcat-users.xml`
+`echo '<tomcat-users xmlns="http://tomcat.apache.org/xml" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://tomcat.apache.org/xml tomcat-users.xsd" version="1.0">' >> /var/opt/apache-tomcat-8.5.68/conf/tomcat-users.xml`
+`echo '<role rolename="root"/>' >> /var/opt/apache-tomcat-8.5.68/conf/tomcat-users.xml`
+`echo '<user username="root" password="#{tomcat_psd}" roles="root"/>' >> /var/opt/apache-tomcat-8.5.68/conf/tomcat-users.xml`
+`echo '</tomcat-users>' >> /var/opt/apache-tomcat-8.5.68/conf/tomcat-users.xml`
 `service tomcat stop; sleep 2; service tomcat start`
