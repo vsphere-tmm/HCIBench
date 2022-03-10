@@ -138,6 +138,9 @@ do
       FILE_NAME="$(basename $file)"
       PARENT_NAME="$(basename "$(dirname "$file")")"
       BACKUP_DIR="/tmp/$PARENT_NAME"
+      if [ -d "$BACKUP_DIR" ]; then
+        rm -rf $BACKUP_DIR
+      fi
       mkdir -p $BACKUP_DIR && mv -f $item $BACKUP_DIR
       echo "Copied $file to $BACKUP_DIR"
     fi
@@ -212,10 +215,16 @@ echo ""
 echo -e "\e[33mReplacing tomcat file...\e[0m"
 echo 'Stopping Tomcat'
 service tomcat stop
-echo 'Removing old web app'
-rm -rf /var/opt/apache-tomcat-8.5.4/webapps/VMtest*
-echo 'Copying new web app'
-mv "$PACKAGES/vmtest/VMtest.war" /var/opt/apache-tomcat-8.5.4/webapps/VMtest.war
+
+# Fixed a bug here, get the correct tomcat path regardless of the version number
+for dir in "/var/opt/apache-tomcat-"*/
+do
+  echo 'Removing old web app'
+  rm -rf ${dir}webapps/VMtest*
+  echo 'Copying new web app'
+  mv "$PACKAGES/vmtest/VMtest.war" ${dir}webapps/VMtest.war
+done
+
 echo 'Starting Tomcat'
 # Tomcat service needs to be started then restarted...
 service tomcat start
