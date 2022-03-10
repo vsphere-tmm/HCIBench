@@ -58,17 +58,13 @@ else
       @local = "Local"
     end
 
-    sum_stats_full = _get_vsan_disk_stats(cluster_to_pick)
-    sum_stats = sum_stats_full[1]
-    total_cache_size = 0
-    num_of_dg = 0
-    num_of_cap = 0
-    sum_stats.each do |stat|
-      total_cache_size = stat.scan(/\d/).join.to_i if stat.include? "Total_Cache_Size"
-      num_of_dg = stat.scan(/\d/).join.to_i if stat.include? "Total_DiskGroup_Number"
-      num_of_cap = stat.scan(/\d/).join.to_i if stat.include? "Total_Capacity_Disk_Number"
-    end
-    dedup, vsan_type = _get_vsan_type(cluster_to_pick)
+    vsan_stats_hash = _get_vsan_disk_stats(cluster_to_pick)
+    total_cache_size = vsan_stats_hash["Total_Cache_Size"]
+    num_of_dg = vsan_stats_hash["Total number of Disk Groups"]
+    num_of_cap = vsan_stats_hash["Total number of Capacity Drives"]
+    dedup = vsan_stats_hash["Dedupe Scope"]
+    vsan_type = vsan_stats_hash["vSAN type"]
+
     if vsan_type == "All-Flash"
       total_cache_size = [num_of_dg * 600,total_cache_size].min
     end
@@ -83,9 +79,9 @@ else
     file.puts "Total Cache Disk Size: #{total_cache_size} GB"
     file.puts "Capacity Disk per Disk Group: #{cap_per_dg}\n"
     se = "Deduplication/Compression"
-    if dedup == "1"
+    if dedup == 1
       se = "Compression Only"
-    elsif dedup == "0"
+    elsif dedup == 0
       se = "None"
     end
     file.puts "Space Efficiency: #{se}\n"

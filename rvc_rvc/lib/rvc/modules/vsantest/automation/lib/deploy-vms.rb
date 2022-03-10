@@ -32,6 +32,8 @@ if $storage_policy and not $storage_policy.empty? and not $storage_policy.strip.
 end
 
 def deployOnHost(datastore, vm_num, batch, ips, hosts)
+  multiwriter_param = ""
+  multiwriter_param = "-w" if $multiwriter and not $easy_run
   ip_rvc = ""
   host_rvc = ""
   ips.each do |ip|
@@ -52,11 +54,11 @@ def deployOnHost(datastore, vm_num, batch, ips, hosts)
     deploy_action_escape = Shellwords.escape(%{vsantest.perf.deploy_test_vms . --resource-pool #{$resource_pool_name_escape} \
       --vm-folder #{$vm_folder_name} --datastore "#{ds_path_gsub}" --network ~dest_network #{@disk_size_var} #{@disk_num_var} \
       --num-vms #{vm_num} --num-cpu #{$num_cpu} --size-ram #{$size_ram} --name-prefix "#{prefix}" #{host_rvc} --static #{ip_rvc} --ip-size #{$static_ip_size} \
-      --storage-policy "#{storage_policy}" --tool "#{$tool}"})
+      --storage-policy "#{storage_policy}" --tool "#{$tool}" #{multiwriter_param}})
   else
     deploy_action_escape = Shellwords.escape(%{vsantest.perf.deploy_test_vms . --resource-pool #{$resource_pool_name_escape} \
       --vm-folder #{$vm_folder_name} --datastore "#{ds_path_gsub}" --network ~dest_network #{@disk_size_var} #{@disk_num_var} \
-      --num-vms #{vm_num} --num-cpu #{$num_cpu} --size-ram #{$size_ram} --name-prefix "#{prefix}" #{host_rvc} --storage-policy "#{storage_policy}" --tool "#{$tool}"})
+      --num-vms #{vm_num} --num-cpu #{$num_cpu} --size-ram #{$size_ram} --name-prefix "#{prefix}" #{host_rvc} --storage-policy "#{storage_policy}" --tool "#{$tool}" #{multiwriter_param}})
   end
   log = Shellwords.escape("#{$log_path}/#{datastore}-#{batch}-vm-deploy.log")
   `rvc #{$vc_rvc} --path #{$cl_path_escape} -c #{@get_network_instance_escape} -c #{deploy_action_escape} -c 'exit' >> #{log} 2>&1`
@@ -105,6 +107,7 @@ puts "#{ds_hosts_hash.to_s}", @log_file
 ds_hosts_hash.keys.each do |ds|
   hosts_size = ds_hosts_hash[ds].size
   batch = [[($vms_perstore/hosts_size).ceil,1].max,hosts_size].min
+  batch = 1 if $multiwriter
   # see if each batch the number of vm deployed is equal
   # num_batch_more != 0 means some batches has one more vm than other batches, and we have num_batch_more of batches should
   # deploy more vm(this kind of batch we deploy vm_num_batch_more vms), and the number of normal batch is num_batch_less(deploy vm_num_batch_less vms)

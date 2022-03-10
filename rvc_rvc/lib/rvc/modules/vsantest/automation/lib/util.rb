@@ -7,7 +7,7 @@ require 'net/scp'
 require_relative "rvc-util.rb"
 
 def puts(o,f=nil)
-  o = "#{Time.now}: " + o
+  o = "#{Time.now}: " + o.to_s
   super(o)
   if not f.nil?
     open(f, 'a') do |file|
@@ -67,7 +67,7 @@ def scp_item(host, user, pass, source, dest)
      scp.upload!(source, dest)
    end
    p "#{source} upload to #{host}:#{dest} success"
-   return 
+   return true
  rescue Net::SSH::ConnectionTimeout
     p "Timed out"
  rescue Timeout::Error
@@ -82,6 +82,7 @@ def scp_item(host, user, pass, source, dest)
     p "#{e.class}: #{e.message}"
  end
  p "#{source} upload to #{host}:#{dest} failed"
+ return false
 end
 
 def download_item(host, user, pass, source, dest, opt={})

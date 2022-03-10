@@ -54,6 +54,7 @@ else
     end
   end
 end
+
 if msg.count(";") == 1
   print msg.scan(/[0-9]*.[0-9]*%/).join 
 else

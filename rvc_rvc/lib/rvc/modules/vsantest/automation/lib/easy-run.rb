@@ -17,7 +17,7 @@ ratio = 0.25
 disk_init = "ZERO"
 _test_time = 3600
 _warmup_time = 1800
-@dedup = "0"
+@dedup = 0
 
 vsan_datastores = _get_vsandatastore_in_cluster
 if vsan_datastores == {}
@@ -44,8 +44,10 @@ else
     puts "vSAN #{local_type} Datastore Name: #{vsan_datastore_name}", @log_file
     if disk_init == "ZERO"
       temp_cluster = _get_vsan_cluster_from_datastore(vsan_datastore_name)
-      @dedup, vsan_type = _get_vsan_type(temp_cluster)
-      disk_init = "RANDOM" if @dedup != "0"
+      vsan_stats_hash = _get_vsan_disk_stats(temp_cluster)
+      @dedup = vsan_stats_hash["Dedupe Scope"]
+      vsan_type = vsan_stats_hash["vSAN type"]
+      disk_init = "RANDOM" if @dedup != 0
     end
   end
 
@@ -96,17 +98,13 @@ else
   end
 end
 
-sum_stats = _get_vsan_disk_stats(cluster_to_pick)[1]
-total_cache_size = 0
-num_of_dg = 0
-num_of_cap = 0
-sum_stats.each do |stat|
-  total_cache_size = stat.scan(/\d/).join.to_i if stat.include? "Total_Cache_Size"
-  num_of_dg = stat.scan(/\d/).join.to_i if stat.include? "Total_DiskGroup_Number"
-  num_of_cap = stat.scan(/\d/).join.to_i if stat.include? "Total_Capacity_Disk_Number"
-end
+vsan_stats_hash = _get_vsan_disk_stats(cluster_to_pick)
+total_cache_size = vsan_stats_hash["Total_Cache_Size"]
+num_of_dg = vsan_stats_hash["Total number of Disk Groups"]
+num_of_cap = vsan_stats_hash["Total number of Capacity Drives"]
+dedup = vsan_stats_hash["Dedupe Scope"]
+vsan_type = vsan_stats_hash["vSAN type"]
 
-dedup, vsan_type = _get_vsan_type(cluster_to_pick)
 temp_cl_path, temp_cl_path_escape = _get_cl_path(cluster_to_pick)
 witness = `rvc #{$vc_rvc} --path #{temp_cl_path_escape} -c 'vsantest.vsan_hcibench.cluster_info .' -c 'exit' -q | grep -E "^Witness Host:"`.chomp 
 
@@ -130,7 +128,6 @@ vm_deployed_size = total_cache_size * ratio / ftt
 @vm_num = num_of_dg * 2 * $total_datastore
 @data_disk_num = 8 #num_of_cap * 2 / vm_num
 
-# need to have the same num of ip
 #if @vm_num % host_num != 0
 #  @vm_num += (host_num - @vm_num % host_num)
 #end

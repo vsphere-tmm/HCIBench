@@ -7,7 +7,7 @@ require 'spreadsheet'
 version = "vdbench50406"
 stddev_offset = 0
 @empty = true
-ip = `ifconfig eth0 2>/dev/null|awk '/inet addr:/ {print $2}'|sed 's/addr://'`.chomp
+ip = `ip a show dev eth0 | grep global | awk {'print $2'} | cut -d "/" -f1`.chomp
 
 if ARGV.empty?
     p "Put all your test case folders into one test folder, for example:"

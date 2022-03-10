@@ -1,10 +1,13 @@
 require 'yaml'
+require "ipaddress"
 require 'fileutils'
 require 'resolv'
 require "json"
 require 'shellwords'
 require 'ipaddr'
 require "cgi"
+require 'open3'
+require "readline"
 require_relative 'ossl_wrapper'
 require_relative 'util.rb'
 
@@ -15,8 +18,8 @@ $basedir=File.dirname(__FILE__)
 entry = YAML.load_file("#$basedir/../conf/perf-conf.yaml")
 #Param Def
 $ip_prefix = entry["static_ip_prefix"]
-$ip_Address = `ifconfig eth0 2>/dev/null|awk '/inet addr:/ {print $2}'|sed 's/addr://'`.chomp
-$docker_ip = `ifconfig docker0 2>/dev/null|awk '/inet addr:/ {print $2}'|sed 's/addr://'`.chomp
+$ip_Address = `ip a show dev eth0 | grep global | awk {'print $2'} | cut -d "/" -f1`.chomp
+$docker_ip = `ip a show dev docker0 | grep global | awk {'print $2'} | cut -d "/" -f1`.chomp
 $vc_ip = entry["vc"]
 
 begin
@@ -95,7 +98,7 @@ $output_path_dir = "/opt/output/results/" + $output_path
 $reuse_vm = entry["reuse_vm"]
 $cleanup_vm = entry["cleanup_vm"]
 $workloads = entry["workloads"] || ["4k70r"]
-
+$multiwriter = entry["multi_writer"] || false
 #File path def
 $allinonetestingfile = "#{$basedir}/all-in-one-testing.rb"
 $cleanupfile = "#{$basedir}/cleanup-vm.rb"
@@ -129,14 +132,24 @@ $tmp_path = "#{$basedir}/../tmp/"
 $log_path = "#{$basedir}/../logs/"
 $vdbench_source_path = "/opt/output/vdbench-source"
 $fio_source_path = "/opt/output/fio-source"
-
+$compute_only_cluster = "" 
 $total_datastore = $datastore_names.count
-$vc_rvc = Shellwords.escape("#{$vc_username}:#{$vc_password}") + "@#{$vc_ip}" + " -a"
+if IPAddress.valid? $vc_ip and IPAddress.valid_ipv6? $vc_ip
+  $vc_rvc = Shellwords.escape("#{$vc_username}:#{$vc_password}") + "@[#{$vc_ip}]" + " -a"
+else
+  $vc_rvc = Shellwords.escape("#{$vc_username}:#{$vc_password}") + "@#{$vc_ip}" + " -a"
+end
 $occupied_ips = []
 ENV['GOVC_USERNAME'] = "#{$vc_username}"
 ENV['GOVC_PASSWORD'] = "#{$vc_password}"
-ENV['GOVC_URL'] = "#{$vc_ip}"
+if IPAddress.valid? $vc_ip and IPAddress.valid_ipv6? $vc_ip
+  ENV['GOVC_URL'] = "[#{$vc_ip}]"
+else
+  ENV['GOVC_URL'] = "#{$vc_ip}"
+end
 ENV['GOVC_INSECURE'] = "true"
+ENV['GOVC_DATACENTER'] = "#{$dc_name}"
+ENV['GOVC_PERSIST_SESSION'] = "true"
 $vm_num = 0 unless $vm_num
 $vms_perstore = $vm_num / $total_datastore
 
@@ -164,23 +177,96 @@ $easy_run_vsan_cluster = ""
 $telegraf_target_clusters_map = {}
 #clusters will be running observer, should be called all the time to the local, along with remote vsan ds specified
 $observer_target_clusters_arr = [$cluster_name]
+$perfsvc_master_nodes = []
 
-def _is_duplicated object_type, object_name, object_parent_path
+class MyJSON
+  def self.valid?(value)
+    result = JSON.parse(value)
+    result.is_a?(Hash) || result.is_a?(Array)
+  rescue JSON::ParserError, TypeError
+    false
+  end
+end
+
+def _save_str_to_hash_arr obj_str
+  json_temp = ""
+  hash_arr = []
+  obj_str.each_line do |line|
+    json_temp += line
+    if MyJSON.valid?(json_temp)
+      hash_arr << JSON.parse(json_temp)
+      json_temp = ""
+    end
+  end
+  return hash_arr
+end
+
+def _is_duplicated object_type, object_name
   object_name_escaped = Shellwords.escape(object_name)
-  object_parent_path_escape = Shellwords.escape(object_parent_path)
-  types = {"dc" => "d", "rp" => "p", "ds" => "s", "nt" => "n", "fd" => "f", "cl" => "c"}
-  count = `govc find -type #{types[object_type]} -name=#{object_name_escaped} #{object_parent_path_escape} | wc -l`.to_i
-  return (count > 1)
+  types = {"dc" => "d", "rp" => "p", "ds" => "s", "nt" => "n", "fd" => "f", "cl" => "c", "hs" => "h"}
+  stdout, stderr, status = Open3.capture3(%{govc find -dc "#{Shellwords.escape($dc_name)}" -type #{types[object_type]} -name "#{object_name_escaped}"})
+  if stderr != ""  
+    return true, stderr
+  elsif stdout.chomp.split("\n").size != 1 #_save_str_to_hash_arr(stdout).size != 1
+    return true, "Found #{stdout.chomp.split("\n").size} #{object_name}"
+  else
+    return false,""
+  end
+end
+
+def _has_resource object_type, object_name
+  object_name_escaped = Shellwords.escape(object_name)
+  types = {"dc" => "d", "rp" => "p", "ds" => "s", "nt" => "n", "fd" => "f", "cl" => "c", "hs" => "h"}
+  return (`govc find -type #{types[object_type]} -dc "#{Shellwords.escape($dc_name)}" -name "#{object_name_escaped}"`.chomp != "")
+end
+
+def _get_folder_moid(folder_name, parent_moid = "")
+  return "" if folder_name == ""
+  folder_name_escaped = Shellwords.escape(folder_name)
+  if parent_moid == ""
+    parent_moid = `govc find -type f -i -dc "#{Shellwords.escape($dc_name)}" . -parent "#{_get_moid('dc',$dc_name).join(':')}" -name "vm"`.chomp
+  end
+  return `govc find -type f -i -dc "#{Shellwords.escape($dc_name)}" . -parent "#{parent_moid}" -name "#{folder_name_escaped}"`.chomp
+=begin
+  parent_moid = ""
+  if parent_name != "" #get parent fd's moid
+    parent_moid = _get_moid("fd",parent_name).join(":")
+  else
+    parent_moid = `govc find -type f -i -dc "#{Shellwords.escape($dc_name)}" . -parent "#{_get_moid('dc',$dc_name).join(':')}" -name "vm"`.chomp
+  end
+  return `govc find -type f -i -dc "#{Shellwords.escape($dc_name)}" . -parent "#{parent_moid}" -name "#{folder_name_escaped}"`.chomp
+=end
+end
+
+def _get_moid object_type, object_name
+  object_name_escaped = Shellwords.escape(object_name)
+  types = {"dc" => "d", "rp" => "p", "ds" => "s", "nt" => "n", "fd" => "f", "cl" => "c", "hs" => "h"}
+  if not _is_duplicated(object_type, object_name)[0]
+    path = "./"
+    path = "/" if object_type == "dc"
+    obj_js = JSON.parse(`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s -json -type #{types[object_type]} #{path} -name "#{object_name_escaped}"`.chomp)
+    obj_type = obj_js["Obj"]["Type"]
+    obj_id = obj_js["Obj"]["Value"]
+    return obj_type,obj_id
+  else
+    return "",""
+  end
+end
+
+def _get_name object_type, object_moid
+  return `govc object.collect -s #{object_type}:#{object_moid} name`.chomp
 end
 
 def _get_dc_path
   if $dc_path != ""
     return $dc_path, $dc_path_escape 
   else
-    $dc_path = `govc find -type d -name=#{Shellwords.escape($dc_name)}`.chomp
+    ENV['GOVC_DATACENTER'] = ""
+    $dc_path = `govc find -type d -name "#{Shellwords.escape($dc_name)}"`.chomp
     $dc_path = $dc_path.encode('UTF-8', :invalid => :replace)[1..-1] if $dc_path != ""
     $dc_path_escape = Shellwords.escape("/#{$vc_ip}/#{$dc_path}")
   end
+  ENV['GOVC_DATACENTER'] = "#{$dc_name}"
   return $dc_path, $dc_path_escape
 end
 
@@ -214,6 +300,9 @@ def _get_folder_path_escape
     folder_path_escape = Shellwords.escape("/#{$vc_ip}/#{$dc_path}/vms/#{$vm_prefix}-#{$cluster_name}-vms")
     folder_path_escape_gsub = Shellwords.escape("/#{$vc_ip}/#{$dc_path.gsub('"','\"')}/vms/#{$vm_prefix}-#{$cluster_name.gsub('"','\"')}-vms")
   end
+  
+  #`govc object.mv -dc "#{Shellwords.escape($dc_name)}" '#{_get_moid("fd",$fd_name).join(":")}' "Folder:group-v805" `
+
   return folder_path_escape, folder_path_escape_gsub
 end
 
@@ -233,8 +322,11 @@ end
 
 #returning all [hosts] in the cluster
 def _get_hosts_list(cluster_name = $cluster_name)
-  cl_path, cl_path_escape = _get_cl_path(cluster_name) 
-  hosts_list = `rvc #{$vc_rvc} --path #{cl_path_escape} -c 'find hosts' -c 'exit' -q | awk -F/ '{print $NF}'`.encode('UTF-8', :invalid => :replace).split("\n")
+  hosts_list = []
+  host_system_id_arr = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("cl",cluster_name).join(":")} host`.chomp.split(",")
+  host_system_id_arr.each do |host_system_id|
+    hosts_list << `govc object.collect -s #{host_system_id} name`.chomp
+  end
   return hosts_list
 end
 
@@ -244,8 +336,7 @@ def _get_deploy_hosts_list
   if $deploy_on_hosts
     $hosts_deploy_list = $all_hosts 
   else
-    $cl_path, $cl_path_escape = _get_cl_path if $cl_path == ""
-    $hosts_deploy_list = `rvc #{$vc_rvc} --path #{$cl_path_escape} -c 'find hosts' -c 'exit' -q | awk -F/ '{print $NF}'`.encode('UTF-8', :invalid => :replace).split("\n")
+    $hosts_deploy_list = _get_hosts_list
   end
   return $hosts_deploy_list
 end
@@ -257,8 +348,15 @@ def _get_hosts_list_in_ip(cluster_name = $cluster_name)
 end
 
 def _get_hosts_list_by_ds_name(datastore_name)
-  ds_path, ds_path_escape = _get_ds_path_escape(datastore_name)
-  hosts_list = `rvc #{$vc_rvc} --path #{ds_path_escape} -c 'vsantest.perf.get_hosts_by_ds .' -c 'exit' -q`.encode('UTF-8', :invalid => :replace).split("\n")
+  hosts_list = []
+  host_system_hash = JSON.parse(`govc object.collect -json -s #{_get_moid("ds",datastore_name).join(":")} host`.chomp)
+  host_system_hash[0]["Val"]["DatastoreHostMount"].each do |host_system|
+    if host_system["MountInfo"]["Accessible"]
+      obj_type = host_system["Key"]["Type"]
+      obj_id = host_system["Key"]["Value"]
+      hosts_list << _get_name(obj_type, obj_id)
+    end
+  end
   return hosts_list
 end
 
@@ -296,33 +394,30 @@ def _get_ds_path_escape(datastore_name)
 end
 
 def _is_vsan(datastore_name)
-  ds_path, ds_path_escape = _get_ds_path_escape(datastore_name)
-  ds_type = `rvc #{$vc_rvc} --path #{ds_path_escape} -c "info ." -c 'exit' -q | grep 'type:' | awk '{print $2}'`.encode('UTF-8', :invalid => :replace).chomp
+  ds_type_js = JSON.parse(`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -json #{_get_moid("ds",datastore_name).join(':')} summary.type`.chomp)
+  ds_type = ds_type_js[0]["Val"]
   return (ds_type == "vsan")
 end
 
-def _is_vsan_enabled
-  return (_get_vsandatastore_in_cluster != {})
-end
-
 def _is_ps_enabled(cluster_name = $cluster_name)
-  cl_path, cl_path_escape = _get_cl_path(cluster_name) 
-  perf_enabled = `rvc #{$vc_rvc} --path #{cl_path_escape} -c 'vsantest.perf.vsan_cluster_perf_service_enabled .' -c 'exit' -q`
-  return (perf_enabled.include? "True")
+  return false if $compute_only_cluster == cluster_name
+  vsan_stats_hash = _get_vsan_disk_stats(cluster_name)
+  return vsan_stats_hash["PerfSvc"]
 end
 
 #returning {vsan_ds1 => {"capacity"=>cap,"freeSpace"=>fs,"local"=>true/false}, vsan_ds2 => {"capacity"=>cap,"freeSpace"=>fs,"local"=>true/false}}
-def _get_vsandatastore_in_cluster
+def _get_vsandatastore_in_cluster(cluster_name = $cluster_name)
   return $vsandatastore_in_cluster if $vsandatastore_in_cluster != {}
-  $cl_path, $cl_path_escape = _get_cl_path if $cl_path == ""
-  cmd_run = `rvc #{$vc_rvc} --path #{$cl_path_escape} -c 'vsantest.perf.find_vsan_datastore .' -c 'exit' -q`.encode('UTF-8', :invalid => :replace).chomp
-  begin
-    $vsandatastore_in_cluster = eval(cmd_run)
-  rescue StandardError => e
-    p e.to_s
-  ensure
-    return $vsandatastore_in_cluster
+  datastores_full_moid_in_cluster = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("cl",cluster_name).join(":")} datastore`.chomp.split(",")
+  datastores_full_moid_in_cluster.each do |datastore_full_moid|
+    if `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{datastore_full_moid} summary.type`.chomp == "vsan"
+      ds_name = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{datastore_full_moid} name`.chomp
+      ds_capacity = (`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{datastore_full_moid} summary.capacity`.to_i/(1024**3)).to_s
+      ds_freespace = (`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{datastore_full_moid} summary.freeSpace`.to_i/(1024**3)).to_s
+      $vsandatastore_in_cluster[ds_name] = {"capacity" => ds_capacity, "freeSpace" => ds_freespace, "local" => _is_ds_local_to_cluster(ds_name)}
+    end
   end
+  return $vsandatastore_in_cluster
 end
 
 def _get_ip_addr
@@ -358,6 +453,18 @@ def _set_perfsvc_verbose_mode(verbose_mode,cluster_name = $cluster_name)
   return ($?.exitstatus == 0)
 end
 
+def _clean_perfsvc_stats(cluster_name = $cluster_name)
+  cl_path, cl_path_escape = _get_cl_path(cluster_name)
+  `rvc #{$vc_rvc} --path #{cl_path_escape} -c 'vsan.perf.stats_object_delete .' -c 'exit' -q`
+  return ($?.exitstatus == 0)
+end
+
+def _start_perfsvc(cluster_name = $cluster_name)
+  cl_path, cl_path_escape = _get_cl_path(cluster_name)
+  `rvc #{$vc_rvc} --path #{cl_path_escape} -c 'vsan.perf.stats_object_create .' -c 'exit' -q`
+  return ($?.exitstatus == 0)
+end
+
 # get ip pool if using static, otherwise return []
 # only add the ips not being occupied
 def _get_ip_pools
@@ -365,6 +472,7 @@ def _get_ip_pools
   return $ip_pool if $ip_pool != []
   ip_range = IPAddr.new("#{$starting_static_ip}/#{$static_ip_size}")
   begin_ip = IPAddr.new($starting_static_ip)
+  system("ifconfig -s eth1 0.0.0.0; ifconfig eth1 down; ifconfig eth1 up")
   ips = []
   ip_required = [_get_num_of_tvm_to_deploy,_get_num_of_vm_to_deploy].max + 1 
   while ips.size < ip_required and ip_range.include? begin_ip do
@@ -378,7 +486,8 @@ def _get_ip_pools
     end
     temp_ip_arr.each do |ip_to_s|
       find_ip_threads << Thread.new{
-        if not system("arping -q -I eth1 -c 5 #{ip_to_s}") # ip available
+        o = system("arping -q -D -I eth1 -c 5 #{ip_to_s}")
+        if o # ip available
           $occupied_ips.delete(ip_to_s) if $occupied_ips.include? ip_to_s
           ips << ip_to_s if not ips.include? ip_to_s
         else #ip occupied
@@ -389,7 +498,10 @@ def _get_ip_pools
     find_ip_threads.each{|t|t.join}
   end
   ips = ips.sort_by{|s| s.split(".")[-1].to_i}
-  $eth1_ip = ips[0] if ips[0]  
+  if ips[0]
+    $eth1_ip = ips[0]
+    system("ifconfig -s eth1 #{$eth1_ip}/#{$static_ip_size}")
+  end
   $ip_pool = ips[1..-1]
   return $ip_pool
 end
@@ -413,14 +525,12 @@ def _get_num_of_tvm_to_deploy
   return $tvm_num
 end
 
+########### GOVC??????????
 #Would only called by pre-validation, 
 def _get_num_of_vm_to_deploy
   return $vm_num if not $easy_run
-  num_of_dg = 0
-  sum_stats = _get_vsan_disk_stats(_pick_vsan_cluster_for_easy_run)[1]
-  sum_stats.each do |stat|
-    num_of_dg = stat.scan(/\d/).join.to_i if stat.include? "Total_DiskGroup_Number" 
-  end
+  vsan_stats_hash = _get_vsan_disk_stats(_pick_vsan_cluster_for_easy_run)
+  num_of_dg = vsan_stats_hash["Total number of Disk Groups"]
   $cl_path, $cl_path_escape = _get_cl_path if $cl_path == ""
   witness = `rvc #{$vc_rvc} --path #{$cl_path_escape} -c 'vsantest.vsan_hcibench.cluster_info .' -c 'exit' -q | grep -E "^Witness Host:"`.chomp
   num_of_dg -= 1 if witness != ""
@@ -446,34 +556,42 @@ def _pick_vsan_cluster_for_easy_run
 end
 
 def _is_ds_local_to_cluster(datastore_name)
-  $cl_path, $cl_path_escape = _get_cl_path
-  ds_path, ds_path_escape = _get_ds_path_escape(datastore_name)
-  cluster_id = `rvc #{$vc_rvc} --path #{$cl_path_escape} -c 'vsantest.perf.get_cluster_id .' -c 'exit' -q`.chomp
-  datastore_container_id = `rvc #{$vc_rvc} --path #{ds_path_escape} -c 'vsantest.perf.get_vsan_datastore_container_id .' -c 'exit' -q`.chomp
-  return (cluster_id == datastore_container_id)
+  datastore_alias_id =`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} info.aliasOf`.chomp.delete('-')
+  datastore_container_id = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} info.containerId`.chomp.delete('-')
+  cluster_json = JSON.parse(`govc object.collect -json -s #{_get_moid("cl",$cluster_name).join(":")} configurationEx`.chomp)  
+  if cluster_json[0]["Val"]["VsanHostConfig"][0]["ClusterInfo"]# ["Enabled"] 
+    $compute_only_cluster = $cluster_name if not cluster_json[0]["Val"]["VsanHostConfig"][0]["Enabled"]
+    cluster_id = cluster_json[0]["Val"]["VsanHostConfig"][0]["ClusterInfo"]["Uuid"].delete('-')
+    return (cluster_id == datastore_container_id or cluster_id == datastore_alias_id)
+  else
+    return true
+  end
 end
 
 # get the owner cluster of the datastore
 def _get_vsan_cluster_from_datastore(datastore_name)
-  ds_path, ds_path_escape = _get_ds_path_escape(datastore_name)
-  cluster_name = `rvc #{$vc_rvc} --path #{ds_path_escape} -c 'vsantest.perf.get_vsan_owner_cluster_from_datastore .' -c 'exit' -q`.chomp
-  return cluster_name
+  datastore_alias_id =`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} info.aliasOf`.chomp.delete('-')
+  datastore_container_id = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} info.containerId`.chomp.delete('-')
+  ds_hosts_list = _get_hosts_list_by_ds_name(datastore_name)
+  ds_hosts_list.each do |host|
+    cluster_id = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("hs",host).join(":")} config.vsanHostConfig.clusterInfo.uuid`.chomp.delete('-')
+    if cluster_id == datastore_container_id or cluster_id == datastore_alias_id
+      cluster_full_moid = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("hs",host).join(":")} parent`.chomp
+      return `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{cluster_full_moid} name`.chomp
+    end
+  end
 end
 
 # get compliant [ds] of the storage policy
 def _get_compliant_datastore_ids_escape(storage_policy = $storage_policy)
-  $dc_path, $dc_path_escape = _get_dc_path
-  get_compliant_datastore_ids_escape = Shellwords.escape(%{vsantest.perf.get_compliant_datastore_by_policy_name . "#{storage_policy}"})
-  compliant_ds_ids = `rvc #{$vc_rvc} --path #{$dc_path_escape} -c #{get_compliant_datastore_ids_escape} -c 'exit' -q`.chomp
-  return [] if compliant_ds_ids == "Cant find the storage policy #{storage_policy}" or compliant_ds_ids == "Cant find compliant datastore for policy #{storage_policy}"
-  return compliant_ds_ids.split("\n")
+  policy_js = JSON.parse(`govc storage.policy.info -s -json $'#{storage_policy.gsub("'",%q(\\\'))}'`.chomp)
+  compliant_ds_names = policy_js["Policies"][0]["CompatibleDatastores"]
+  return compliant_ds_names.map!{|ds|_get_ds_id_by_name(ds)}
 end
 
 # return datastore ref_id
 def _get_ds_id_by_name(datastore_name)
-  ds_path, ds_path_escape = _get_ds_path_escape(datastore_name)
-  ds_id = `rvc #{$vc_rvc} --path #{ds_path_escape} -c 'vsantest.perf.get_datastore_id .' -c 'exit' -q`.chomp
-  return ds_id
+  return _get_moid("ds",datastore_name)[1]
 end
 
 #clusters have vsan datastores mounted to testing cluster and those datastores are used for testing
@@ -522,56 +640,62 @@ def _get_all_vsan_clusters
   return $all_vsan_clusters
 end
 
+def _get_vsan_stats(datastore_name)
+  datastore_full_moid = _get_moid("ds",datastore_name).join(":")
+  vsan_info_json = JSON.parse(`govc datastore.vsan.info -json -dc "#{Shellwords.escape($dc_name)}" -m #{datastore_full_moid}`.chomp)
+  vsan_default_policy_id = vsan_info_json["DatastoreDefaultProfileId"][datastore_full_moid][0]
+  vsan_detail = JSON.parse(vsan_info_json["DatastoreDefaultProfileId"][datastore_full_moid][1])
+  vsan_cluster_name = vsan_info_json["DatastoreDefaultProfileId"][datastore_full_moid][2]
+  return vsan_default_policy_id, vsan_detail, vsan_cluster_name
+end
+
 #returning policy_name, rules in []
 def _get_vsan_default_policy(datastore_name)
-  ds_path, ds_path_escape = _get_ds_path_escape(datastore_name)
-  default_policy = `rvc #{$vc_rvc} --path #{ds_path_escape} -c "vsantest.spbm_hcibench.get_vsandatastore_default_policy ." -c 'exit' -q`.encode('UTF-8', :invalid => :replace).split("\n")
-  rule_start_pos = 0
-  policy_name = ""
-  default_policy.each_with_index do |line,index|
-    policy_name = line.split(" ")[1..-1].join(' ') if line.match "^Name: .*"
-    rule_start_pos = index + 1 if line.match "^Rule-Sets:"
-  end
-  return policy_name,default_policy[rule_start_pos..-1]
+  vsan_default_policy_id, _, _ = _get_vsan_stats(datastore_name)
+  default_policy_hash = JSON.parse(`govc storage.policy.ls -json #{vsan_default_policy_id}`.chomp)
+  policy_name = default_policy_hash["Profile"][0]["Name"]
+  return policy_name, _get_storage_policy_rules(policy_name)
 end
 
 #returning rules of the storage policy in []
 def _get_storage_policy_rules(storage_policy = $storage_policy)
   rules = []
-  $dc_path, $dc_path_escape = _get_dc_path
-  get_rules_escape = Shellwords.escape(%{vsantest.perf.get_policy_rules_by_name . "#{storage_policy}"})
-  rules = `rvc #{$vc_rvc} --path #{$dc_path_escape} -c #{get_rules_escape} -c 'exit' -q | grep -E "^Rule-Sets:" -A 100`.encode('UTF-8', :invalid => :replace).split("\n")
+  policy_js = JSON.parse(`govc storage.policy.info -s -json $'#{storage_policy.gsub("'",%q(\\\'))}'`.chomp)
+  rules_js = policy_js["Policies"][0]["Profile"]["Constraints"]["SubProfiles"][0]["Capability"]
+  rules_js.each do |rule_json|
+    rules << "#{rule_json['Id']['Namespace']}.#{rule_json['Id']['Id']}: #{rule_json['Constraint'][0]['PropertyInstance'][0]['Value']}"
+  end
   return rules
 end
 
 #returning vsan disk stats detail table stats, sum stats
 def _get_vsan_disk_stats(cluster_name = $cluster_name)
-  cl_path, cl_path_escape = _get_cl_path(cluster_name)
-  stats = `rvc #{$vc_rvc} --path #{cl_path_escape} -c 'vsantest.vsan_hcibench.disks_stats .' -c 'exit' -q`.chomp.split("\n")
-  first_pos = 0
-  last_pos = 0
-  stats.each_with_index do |stat,index|
-    if first_pos == 0 and stat.include? "-+-"
-      first_pos = index
+  cluster_moid = _get_moid('cl',cluster_name).join(':')
+  #puts `govc cluster.vsan.info -json -dc "#{Shellwords.escape($dc_name)}" -m "#{cluster_moid}"`
+  vsan_stats_hash = JSON.parse(`govc cluster.vsan.info -json -dc "#{Shellwords.escape($dc_name)}" -m "#{cluster_moid}"`.chomp)
+  disks = JSON.parse(vsan_stats_hash["ClusterVsanInfo"][cluster_moid])
+  cache_num = 0
+  cache_size = 0
+  capacity_num = 0
+  type = 'Hybrid'
+  dedupe_scope = 0
+  disks.keys.each do |disk|
+    if disks[disk]["isSsd"] == 1
+      cache_size += disks[disk]["ssdCapacity"]/1024**3
+      cache_num += 1
+      type = "All-Flash" if disks[disk]["isAllFlash"] == 1
+      dedupe_scope = disks[disk]["dedupScope"] if type == "All-Flash"
+    else
+      capacity_num += 1
     end
-    last_pos = index if stat.include? "-+-"
+  end  
+  vsan_conf = vsan_stats_hash["ClusterVsanConf"][cluster_moid]
+  perfsvc = vsan_conf["PerfsvcConfig"]["Enabled"]
+  verbose_mode = false
+  if perfsvc
+    verbose_mode = vsan_conf["PerfsvcConfig"]["VerboseMode"]
   end
-  #stats[first_pos..last_pos]: detail disks stats in table
-  #stats[(last_pos+1)..-1]: summariezed disks stats info
-  return stats[first_pos..last_pos],stats[(last_pos+1)..-1]
-end
-
-# returning dd/c scope, af/hybrid
-def _get_vsan_type(cluster_name = $cluster_name)
-  cl_path, cl_path_escape = _get_cl_path(cluster_name)
-  vsan_type = `rvc #{$vc_rvc} --path #{cl_path_escape} -c 'vsantest.vsan_hcibench.vsan_type .' -c 'exit' -q`.chomp.split("\n")
-  dd_scope = "0"
-  type = "Hybrid"
-  if vsan_type.size == 2
-    dd_scope = vsan_type[0].split(" ")[1]
-    type = vsan_type[1].split(" ")[1]
-  end
-  return dd_scope,type
+  return {"PerfSvc"=> perfsvc, "PerfSvc_verbose" => verbose_mode, "Total_Cache_Size"=> cache_size, "Total number of Disk Groups"=> cache_num, "Total number of Capacity Drives"=> capacity_num, "vSAN type"=>type,"Dedupe Scope"=> dedupe_scope} 
 end
 
 def _get_cluster_hosts_map_from_file(test_case_path)
@@ -605,33 +729,41 @@ end
 
 # returning spare resource info of host in [cpu,ram_in_GB]
 def _get_host_spare_compute_resource(host)
-  $cl_path, $cl_path_escape = _get_cl_path
-  host_path_escape = Shellwords.escape("/#{$vc_ip}/#{$dc_path}/#{$cl_path}/hosts/#{host}")
-  resource = []
-  resource = `rvc #{$vc_rvc} --path #{host_path_escape} -c 'vsantest.perf.get_host_spare_compute_resource .' -c 'exit' -q`.chomp.split("\n")
-  return resource
+  resource_capacity = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("hs",host).join(":")} hardware.cpuInfo.numCpuThreads hardware.memorySize`.chomp.split("\n")
+  host_cpu = resource_capacity[0].to_i
+  host_ram = resource_capacity[1].to_f/(1024**2)
+  vm_total_cpu = 0
+  vm_total_ram = 0
+  vms_moid = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("hs",host).join(":")} vm`.chomp.split(",")
+  vms_moid.each do |vm_moid|
+    vm_arr = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{vm_moid} config.hardware.numCPU config.hardware.memoryMB runtime.powerState`.chomp.split("\n").reverse()
+    if vm_arr[0] == "poweredOn"
+      vm_total_cpu += vm_arr[1].to_i
+      vm_total_ram += vm_arr[2].to_f
+    end
+  end
+  return [host_cpu-vm_total_cpu,((host_ram-vm_total_ram)/1024).to_i]
 end
 
 def _get_resource_used_by_guest_vms(host)
-  $cl_path, $cl_path_escape = _get_cl_path
-  resource_usage = [0,0]
-  host_path_escape = Shellwords.escape("/#{$vc_ip}/#{$dc_path}/#{$cl_path}/hosts/#{host}")
-  vm_resource = eval(`rvc #{$vc_rvc} --path #{host_path_escape} -c 'vsantest.perf.get_resource_used_by_vms .' -c 'exit' -q`.chomp)
-  vm_resource.keys.each do |vm_name|
-    if vm_name =~ /^#{$vm_prefix}-/
-      resource_usage[0] += vm_resource[vm_name][0]
-      resource_usage[1] += vm_resource[vm_name][1]
+  vm_total_res = [0,0]
+  vms_moid = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("hs",host).join(":")} vm`.chomp.split(",")
+  vms_moid.each do |vm_moid|
+    vm_arr = `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{vm_moid} name config.hardware.numCPU config.hardware.memoryMB runtime.powerState`.chomp.split("\n").reverse()
+    if vm_arr[0] == "poweredOn" and vm_arr[1] =~ /^#{$vm_prefix}-/
+      vm_total_res[0] += vm_arr[2].to_i
+      vm_total_res[1] += (vm_arr[3].to_f/1024).to_i
     end
   end
-  return resource_usage
+  return vm_total_res
 end
 
 # returning datastore capacity and free space
 def _get_datastore_capacity_and_free_space(datastore_name)
-  ds_path, ds_path_escape = _get_ds_path_escape(datastore_name)
-  cap_and_fs = []
-  cap_and_fs = `rvc #{$vc_rvc} --path #{ds_path_escape} -c "vsantest.perf.get_datastore_capacity_and_free_space ." -c 'exit' -q`.encode('UTF-8', :invalid => :replace).split("\n")
-  return cap_and_fs[0], cap_and_fs[1]
+  puts `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} summary.capacity`
+  ds_capacity = (`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} summary.capacity`.to_i/(1024**3)).to_s
+  ds_freespace = (`govc object.collect -dc "#{Shellwords.escape($dc_name)}" -s #{_get_moid("ds",datastore_name).join(":")} summary.freeSpace`.to_i/(1024**3)).to_s
+  return ds_capacity,ds_freespace
 end
 
 def _get_cpu_usage(test_case_path)
@@ -750,3 +882,12 @@ def _get_vsan_cpu_usage(test_case_path)
     return msg
   end
 end
+
+#Convert a string to a unicode string.
+def _convert2unicode(str)
+    strNew = ""
+    str.split('').each { |c| strNew = strNew + '\\u' + c.ord.to_s(16).rjust(4,'0') }
+    return strNew
+end
+
+

@@ -1,7 +1,6 @@
 require 'benchmark'
 require 'yaml'
 load '/opt/automation/lib/rvc-util.rb'
-=begin
 method_arr = ["_get_dc_path",
 	"_get_cl_path(cluster_name)", 
 	"_get_folder_path_escape", 
@@ -79,8 +78,6 @@ method_arr.each do |function|
 	end
 end
 
-
-=end
 
 method_arr = ["_get_dc_path",
 	"_get_cl_path", 

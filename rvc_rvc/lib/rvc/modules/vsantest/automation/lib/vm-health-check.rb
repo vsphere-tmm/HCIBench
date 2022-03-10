@@ -10,6 +10,8 @@ require_relative "rvc-util.rb"
 @status_log = "#{$log_path}/test-status.log"
 @folder_path_escape = _get_folder_path_escape[0]
 @retry_time = 5
+@multiwriter_disks_num = 0
+@multiwriter_disks = []
 
 class Numeric
   Alpha26 = ("a".."z").to_a
@@ -35,7 +37,9 @@ end
 puts "Checking Existing VMs...",@status_log
 #Check vm folder
 puts 'Verifying If Folder Exists...',@vm_health_check_file
-if !system(%{rvc #{$vc_rvc} --path #{@folder_path_escape} -c 'exit' -q > /dev/null 2>&1})
+vm_folder_moid = _get_folder_moid("#{$vm_prefix}-#{$cluster_name}-vms",_get_folder_moid($fd_name,""))
+if vm_folder_moid == ""
+#if !system(%{rvc #{$vc_rvc} --path #{@folder_path_escape} -c 'exit' -q > /dev/null 2>&1})
   failure_handler "No VM Folder Found"
 else
   puts 'Folder Verified...',@vm_health_check_file
@@ -44,44 +48,67 @@ puts "Moving all vms to the current folder",@vm_health_check_file
 puts `rvc #{$vc_rvc} --path #{@folder_path_escape} -c "mv temp/* ." -c 'exit' -q`,@vm_health_check_file
 
 #How many VMs actually in the folder
-@actual_vm_num = `rvc #{$vc_rvc} --path #{@folder_path_escape} -c "vsantest.perf.get_vm_count #{$vm_prefix}-*" -c 'exit' -q`.to_i
+@actual_vm_num = `govc find -type m -i -dc "#{Shellwords.escape($dc_name)}" . -parent "#{vm_folder_moid}" -name "#{$vm_prefix}-*" | wc -l`.chomp.to_i
+#@actual_vm_num = `rvc #{$vc_rvc} --path #{@folder_path_escape} -c "vsantest.perf.get_vm_count #{$vm_prefix}-*" -c 'exit' -q`.to_i
 
 #Check Number of VMs
-if ($vm_num > @actual_vm_num) or `rvc #{$vc_rvc} --path #{@folder_path_escape} -c "ls" -c 'exit' -q`.encode('UTF-8', :invalid => :replace).chomp =~ /no matches/
+if ($vm_num > @actual_vm_num) #or `rvc #{$vc_rvc} --path #{@folder_path_escape} -c "ls" -c 'exit' -q`.encode('UTF-8', :invalid => :replace).chomp =~ /no matches/
   failure_handler "Not Enough VMs Deployed"
 else
   puts "There are #{@actual_vm_num} VMs in the Folder, #{$vm_num} out of #{@actual_vm_num} will be used", @vm_health_check_file
 end
 
 #Check VMs' resource info
-vms_resource_map = eval(`rvc #{$vc_rvc} --path #{@folder_path_escape} -c "vsantest.perf.get_vm_resource_info #{$vm_prefix}-*" -c 'exit' -q`.encode('UTF-8', :invalid => :replace).chomp)
+#vms_resource_map = eval(`rvc #{$vc_rvc} --path #{@folder_path_escape} -c "vsantest.perf.get_vm_resource_info #{$vm_prefix}-*" -c 'exit' -q`.encode('UTF-8', :invalid => :replace).chomp)
 puts `rvc #{$vc_rvc} --path #{@folder_path_escape} -c 'mv temp/* .' -c 'mkdir temp' -c 'mv #{$vm_prefix}-* temp' -c 'exit' -q`, @vm_health_check_file
-puts "Existing VMs info\n#{vms_resource_map}", @vm_health_check_file
-
+#puts "Existing VMs info\n#{vms_resource_map}", @vm_health_check_file
+temp_folder_moid = _get_folder_moid("temp",vm_folder_moid)
+vms_moid_to_use = []
 $datastore_names.each do |datastore|
-  good_vms = []
-  vm_resouce = vms_resource_map.clone
-  vm_resouce.keys.each do |vm|
-    vm_cpu = vm_resouce[vm][0]
-    vm_ram = vm_resouce[vm][1]
-    nt_name = vm_resouce[vm][2]
-    ds_name = vm_resouce[vm][3]
-    if vm_cpu == $num_cpu and vm_ram == $size_ram and nt_name == $network_name and datastore == ds_name
-      vm_move = Shellwords.escape(%{temp/#{vm.gsub('"','\"')}})
-      puts `rvc #{$vc_rvc} --path #{@folder_path_escape} -c "mv #{vm_move} ." -c 'exit' -q`,@vm_health_check_file
-      vms_resource_map.delete(vm)
-      good_vms << vm
-      break if good_vms.size == $vms_perstore
+  good_vms_moid = `govc find -type m -i -dc "#{Shellwords.escape($dc_name)}" . \
+  -parent "#{temp_folder_moid}" \
+  -datastore #{_get_moid("ds",datastore).join(":")} \
+  -config.hardware.numCPU #{$num_cpu} \
+  -network #{_get_moid("nt",$network_name).join(":")} \
+  -config.hardware.memoryMB #{$size_ram*1024}`.chomp.split("\n")
+  if good_vms_moid.size >= $vms_perstore
+    puts "There are #{good_vms_moid.size} can be used, will use #{$vms_perstore} for testing Datastore #{datastore}" ,@vm_health_check_file
+  else
+    failure_handler "Not enough proper VMs in #{datastore}"
+  end
+
+  good_vms_moid.each do |vm_moid|
+    hash_arr = _save_str_to_hash_arr `govc object.collect -dc "#{Shellwords.escape($dc_name)}" -json "#{vm_moid}" config.hardware.device`
+    hash_arr.each do |hash_d|
+      hash_d[0]["Val"]["VirtualDevice"].each do |dev|
+        if dev["DeviceInfo"]["Label"].include? "Hard disk"
+	  if dev["Backing"]["Sharing"] == "sharingMultiWriter" #either sharingNone or sharingMultiWriter 
+	    @multiwriter_disks_num += 1
+	    @multiwriter_disks << dev["Backing"]["FileName"] if not @multiwriter_disks.include? dev["Backing"]["FileName"]
+	  end
+	end
+      end
     end
   end
-  failure_handler "Not enough proper VMs in #{datastore}" if good_vms.size < $vms_perstore
+  if $multiwriter
+    failure_handler "Found #{@multiwriter_disks.size} multi-writer disks in #{good_vms_moid.size} VMs, which is different from the configuration" if @multiwriter_disks.size != $number_data_disk or @multiwriter_disks_num != ($number_data_disk * $vm_num)
+  else
+    failure_handler "Found #{@multiwriter_disks_num} multi-writer disks, which is incompatible" if @multiwriter_disks_num > 0
+  end
+
+  good_vms_moid.each_with_index do |vm_moid,i|
+    puts `govc object.mv -dc "#{Shellwords.escape($dc_name)}" #{vm_moid} "#{vm_folder_moid}"`,@vm_health_check_file
+    vms_moid_to_use << vm_moid
+    break if i == $vms_perstore - 1
+  end
 end
 
 #Reboot all VMs
 begin
   Timeout::timeout(720) do
     puts "Rebooting All the Client VMs...",@vm_health_check_file
-    `rvc #{$vc_rvc} --path #{@folder_path_escape} -c "vm.reboot_guest #{$vm_prefix}-*" -c "vm.ip #{$vm_prefix}-*" -c 'exit' -q`
+    puts `echo #{vms_moid_to_use.join(" ")} | xargs govc vm.power -dc "#{Shellwords.escape($dc_name)}" -M -moid -r`,@vm_health_check_file
+    #puts `echo #{vms_moid_to_use.join(" ")} | xargs govc vm.ip -v4 -dc "#{Shellwords.escape($dc_name)}" -moid -wait 120s`,@vm_health_check_file
     puts "All the Client VMs Rebooted, wait 120 seconds...",@vm_health_check_file
     sleep(120)
     puts "Getting all the Client VMs IP...",@vm_health_check_file
@@ -137,12 +164,17 @@ def verifyVm(vm)
     puts "Fio binary does not exist, upload it to client VM #{vm}", single_vm_health_file
     fio_file = "#{$fio_source_path}/fio"
     scp_item(vm,'root','vdbench',fio_file,"/root/fio")
-
     return_code = ssh_cmd(vm,'root','vdbench', @test_fio_binary_cmd)
     if return_code == ""
       failure_handler "Can not find Fio binary"
     end
   end
+
+  #TBD, can just call rvc to re-install
+  #  install_scripts vms
+  #  install_diskinit vms
+  #Check graphite scripts
+  #Check diskinit
 
   #Check vdbench binary
   if $tool == "vdbench"
@@ -166,6 +198,7 @@ end
 vms = _ssh_to_vm
 tnode = []
 vms.each do |s|
+  s.strip!
   tnode << Thread.new{verifyVm(s)}
 end
 tnode.each{|t|t.join}

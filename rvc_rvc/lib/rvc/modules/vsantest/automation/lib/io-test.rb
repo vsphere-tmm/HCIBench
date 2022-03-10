@@ -13,10 +13,13 @@ require "cgi"
 @vc_password = $vc_password.gsub("\\","\\\\\\").gsub('"','\"')
 @dc_path_pass = $dc_path.gsub("\\","\\\\\\").gsub('"','\"')
 @ip_Address = _get_ip_addr
-@http_place = "https://#{@ip_Address}:8443/output/results"
+@ip_url = @ip_Address
+@ip_url = "[" + @ip_Address + "]" if IPAddress.valid_ipv6? @ip_Address
+@http_place = "https://#{@ip_url}:8443/output/results"
 @sleep_time = 1800
 @debug_mode = $vsan_debug
 @vmkstats_collected = false
+@vsan_clusters_for_debug = [$cluster_name]
 
 vsan_datastores = _get_vsandatastore_in_cluster
 vsan_datastore_names = vsan_datastores.keys & $datastore_names
@@ -26,6 +29,7 @@ if vsan_datastore_names != []
   $telegraf_target_clusters_map[$cluster_name] = CGI.escape($cluster_name) if not $telegraf_target_clusters_map.key?($cluster_name) and _is_ps_enabled($cluster_name)
   vsan_datastore_names.each do |vsan_datastore_name|
     cluster_name = _get_vsan_cluster_from_datastore(vsan_datastore_name)
+    @vsan_clusters_for_debug = @vsan_clusters_for_debug | [cluster_name]
     $observer_target_clusters_arr = $observer_target_clusters_arr | [cluster_name]
     $telegraf_target_clusters_map[cluster_name] = CGI.escape(cluster_name) if not $telegraf_target_clusters_map.key?(cluster_name) and _is_ps_enabled(cluster_name)
   end
@@ -94,13 +98,13 @@ for item in Dir.entries($self_defined_param_file_path).sort
   set_password_action_escape = Shellwords.escape(%{vsantest.perf.set_vc_password "#{@vc_password}"})
 
   puts %{Started Testing #{item}},@status_log_file
-  puts %{<a href="http://#{@ip_Address}:3000/d/#{$tool}/hcibench-#{$tool}-monitoring?orgId=1&var-Testname=#{path_testname}&var-Testcase=#{path_testcase}-#{time}" \
+  puts %{<a href="http://#{@ip_url}:3000/d/#{$tool}/hcibench-#{$tool}-monitoring?orgId=1&var-Testname=#{path_testname}&var-Testcase=#{path_testcase}-#{time}" \
   target="_blank">HERE TO MONITOR #{$tool.upcase} PERFORMANCE</a>},@status_log_file
 
   if $telegraf_target_clusters_map != {}
     `ruby /opt/automation/lib/run_telegraf.rb`
     $telegraf_target_clusters_map.keys.each do |name|
-      puts %{<a href="http://#{@ip_Address}:3000/d/vsan/vsan-overview?orgId=1&refresh=10s&var-datasource=InfluxDB&var-cluster=#{$telegraf_target_clusters_map[name]}" \
+      puts %{<a href="http://#{@ip_url}:3000/d/vsan/vsan-overview?orgId=1&refresh=10s&var-datasource=InfluxDB&var-cluster=#{$telegraf_target_clusters_map[name]}" \
       target="_blank">HERE TO MONITOR vSAN Cluster #{name} PERFORMANCE</a>},@status_log_file
     end
   end

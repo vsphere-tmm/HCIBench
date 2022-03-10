@@ -3,11 +3,11 @@ require_relative "util.rb"
 require_relative "rvc-util.rb"
 require 'fileutils'
 
-@hosts_list = []
+@master_hosts_list = []
 @vsan_clusters = _get_all_vsan_clusters
 if not @vsan_clusters.empty?
   @vsan_clusters.each do |vsan_cluster|
-    @hosts_list = @hosts_list | _get_hosts_list(vsan_cluster)
+    @master_hosts_list = @master_hosts_list | [_get_perfsvc_master_node(vsan_cluster)]
   end
 else
   puts "vSAN not enabled!", @collect_support_bundle_log
@@ -15,13 +15,12 @@ else
 end
 
 @dest_folder = "#{ARGV[0]}/vm-support-bundle"
-@esxi_local_folder = "/tmp/hcibench_vm_support_bundle"
 
 `mkdir -p #{@dest_folder}`
 
 @vm_support_manifest_template = "/opt/automation/lib/vsan-perfsvc-stats-hcibench.mfx.template"
 @vm_support_manifest_script = "/opt/automation/lib/vsan-perfsvc-stats-hcibench.mfx"
-
+@vsan_perfsvc_status_script = "/opt/automation/lib/vsan-perfsvc-status.py"
 @collect_support_bundle_log = "#{$log_path}/supportBundleCollect.log"
 @failure = false
 
@@ -32,18 +31,33 @@ end_time = ARGV[2] || File.mtime("#{ARGV[0]}-res.txt").to_i
 @update_end_time = "sed -i 's/END_TIME/#{end_time}/g' #{@vm_support_manifest_script}"
 
 @cmd_delete_manifest = "rm -f /etc/vmware/vm-support/vsan-perfsvc-stats-hcibench.mfx"
+@cmd_delete_vsan_perfsvc_status_script = "rm -f /tmp/vsan-perfsvc-status.py"
 
 def run_cmd(host)
   `sed -i '/#{host} /d' /root/.ssh/known_hosts`
   if ssh_valid(host, $host_username, $host_password)
     puts "Uploading VM Support manifest to #{host}",@collect_support_bundle_log
-    scp_item(host,$host_username,$host_password, @vm_support_manifest_script,"/etc/vmware/vm-support")
+    if not scp_item(host,$host_username,$host_password, @vm_support_manifest_script,"/etc/vmware/vm-support")
+      puts "Unable to upload #{@vm_support_manifest_script} to #{host}:/etc/vmware/vm-support"
+      @failure = true
+      return 
+    end
+
+    puts "Uploading vsan-perfsvc-status script to #{host}",@collect_support_bundle_log
+    if not scp_item(host,$host_username,$host_password, @vsan_perfsvc_status_script,"/tmp")
+      puts "Unable to upload #{@vsan_perfsvc_status_script} to #{host}:/tmp"
+      @failure = true
+      return
+    end
 
     puts "Downloading bundle from #{host}...", @collect_support_bundle_log
-    `wget --output-document "#{@dest_folder}/#{host}-vm-support-bundle.tgz" --no-check-certificate --user '#{$host_username}' --password '#{$host_password}' https://#{host}/cgi-bin/vm-support.cgi?manifests=Storage:VSANPerfHcibench%20Storage:VSANMinimal`
+    `wget --output-document "#{@dest_folder}/#{host}-vm-support-bundle.tgz" --no-check-certificate --user '#{$host_username}' --password '#{$host_password}' https://#{host}/cgi-bin/vm-support.cgi?manifests=Storage:VSANMinimal%20Storage:VSANPerfHcibench`
 
     puts "Clean up manifest on #{host}", @collect_support_bundle_log
     ssh_cmd(host,$host_username,$host_password,@cmd_delete_manifest)
+
+    puts "Clean up script on #{host}", @collect_support_bundle_log
+    ssh_cmd(host,$host_username,$host_password,@cmd_delete_vsan_perfsvc_status_script)
 
   else
     puts "Unable to SSH to #{host}",@collect_support_bundle_log
@@ -59,7 +73,7 @@ system(@update_start_time)
 system(@update_end_time)
 
 tnode = []
-@hosts_list.each do |s|
+@master_hosts_list.each do |s|
   tnode << Thread.new{run_cmd(s)}
 end
 tnode.each{|t|t.join}

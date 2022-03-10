@@ -64,7 +64,9 @@ vms = _ssh_to_vm
 puts "Disk Preparation Finished: 0/#{@vm_size} VMs", @test_status_log
 Thread.start { check_status }
 vms.each do |s|
+  s.strip!
   threads << Thread.new{run_cmd(s, method, nb_threads)}
+  break if $multiwriter 
 end
 threads.each(&:join)
 `sed -i '$d' #{@test_status_log}`

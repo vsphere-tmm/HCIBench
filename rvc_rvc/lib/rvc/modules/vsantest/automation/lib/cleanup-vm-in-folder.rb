@@ -2,11 +2,11 @@
 require_relative "rvc-util.rb"
 require_relative "util.rb"
 
-@folder_path_escape = _get_folder_path_escape[0]
 @vm_cleanup_log = "#{$log_path}/vm-cleanup.log"
+vm_folder_moid = _get_folder_moid("#{$vm_prefix}-#{$cluster_name}-vms",_get_folder_moid($fd_name,""))
 begin
-	puts `rvc #{$vc_rvc} --path #{@folder_path_escape} -c "kill *" -c 'exit' -q`,@vm_cleanup_log
-	puts `rvc #{$vc_rvc} --path #{@folder_path_escape} -c "destroy ." -c 'exit' -q 2> /dev/null`,@vm_cleanup_log
+	puts `govc find -type m -i -dc "#{Shellwords.escape($dc_name)}" . -parent "#{vm_folder_moid}" | xargs govc vm.destroy -dc "#{Shellwords.escape($dc_name)}" -m`, @vm_cleanup_log
+	puts `govc object.destroy -dc "#{Shellwords.escape($dc_name)}" "#{vm_folder_moid}" 2>/dev/null`,@vm_cleanup_log
 rescue Exception => e
 	puts "dont worry, nothing critical",@vm_cleanup_log
 	puts "#{e.class}: #{e.message}",@vm_cleanup_log
