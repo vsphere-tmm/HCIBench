@@ -644,7 +644,10 @@ def _get_vsan_stats(datastore_name)
   datastore_full_moid = _get_moid("ds",datastore_name).join(":")
   vsan_info_json = JSON.parse(`govc datastore.vsan.info -json -dc "#{Shellwords.escape($dc_name)}" -m #{datastore_full_moid}`.chomp)
   vsan_default_policy_id = vsan_info_json["DatastoreDefaultProfileId"][datastore_full_moid][0]
-  vsan_detail = JSON.parse(vsan_info_json["DatastoreDefaultProfileId"][datastore_full_moid][1])
+  vsan_detail = {}
+  if vsan_info_json["DatastoreDefaultProfileId"][datastore_full_moid][1] != ""
+    vsan_detail = JSON.parse(vsan_info_json["DatastoreDefaultProfileId"][datastore_full_moid][1])
+  end
   vsan_cluster_name = vsan_info_json["DatastoreDefaultProfileId"][datastore_full_moid][2]
   return vsan_default_policy_id, vsan_detail, vsan_cluster_name
 end
